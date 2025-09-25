@@ -1,4 +1,4 @@
-from utils import get_embeddings_from_csv, create_vectorstore, load_book, get_embedding_dim, get_query_embeddings, RetrieverRunnable
+from utils import get_embeddings_from_csv, create_BM25retriever_from_docs, load_book, get_embedding_dim, create_hybrid_retriever, RetrieverRunnable
 from dotenv import load_dotenv 
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.globals import set_llm_cache
@@ -35,22 +35,29 @@ from langchain_core.output_parsers import StrOutputParser
 prompt = hub.pull("rlm/rag-prompt")
 rag_chain = prompt | llm | StrOutputParser()
 
+k_docs = 10
+
 config = {
     "configurable": {
         "embeddings_model_name": "text-embedding-3-large",
-        "k": 5,
+        "k": k_docs,
     }
 }
-query = 'what is the kelly criterion'
+query = 'who were turtle traders and what they did?'
 retriever = RetrieverRunnable(vector_store=vector_store, default_embedding_model=embeddings_model_name)
+
+# print(rag_chain.invoke({
+#     'question': query,
+#     'context': retriever.invoke(query, config)
+# }))
+
+bm25_retriever = create_BM25retriever_from_docs(load_book('./data/book.txt'), k=k_docs)
+hybrid_retriever = create_hybrid_retriever(bm25_retriever, retriever, weights_sparse=0.5)
 
 print(rag_chain.invoke({
     'question': query,
-    'context': retriever.invoke(query, config)
+    'context': hybrid_retriever.invoke(query, config)
 }))
-
-
-
 
 # print(vector_store.index.d)
 

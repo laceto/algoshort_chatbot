@@ -116,9 +116,9 @@ class RetrieverRunnable(Runnable):
         metadata_list = [doc.metadata for doc in docs]
 
         # Format docs into context string
-        context = self.format_docs(docs)
+        # context = self.format_docs(docs)
 
-        return context
+        return docs
     
     def get_query_embeddings(self, query: str, embeddings_model_name: str):
         response = self.client.embeddings.create(

@@ -8,7 +8,7 @@ from langchain_core.documents import Document
 import faiss
 from langchain_community.vectorstores import FAISS
 from langchain_community.docstore.in_memory import InMemoryDocstore
-
+from langchain_core.output_parsers import StrOutputParser
 
 import pandas as pd
 import numpy as np

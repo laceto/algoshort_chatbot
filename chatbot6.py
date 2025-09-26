@@ -1,6 +1,6 @@
 import asyncio
 from typing import TypedDict, Optional, List
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 import streamlit as st
 from langchain_community.document_loaders import TextLoader
@@ -15,6 +15,18 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_community.embeddings import FakeEmbeddings
 from langgraph.checkpoint.memory import MemorySaver
+
+def dict_to_message(msg_dict):
+    role = msg_dict.get("role")
+    content = msg_dict.get("content")
+    if role == "user":
+        return HumanMessage(content=content)
+    elif role == "assistant":
+        return AIMessage(content=content)
+    elif role == "system":
+        return SystemMessage(content=content)
+    else:
+        raise ValueError(f"Unknown role in message dict: {role}")
 
 from dotenv import load_dotenv 
 import pandas as pd
@@ -135,19 +147,36 @@ async def retrieve(state: State) -> State:
 # --- Async generate node with streaming ---
 def make_generate_node(llm: ChatOpenAI):
     async def generate(state: State) -> State:
-        # Include conversation history messages for context
+        # Normalize messages to LangChain message objects
+        messages_history = []
+        for msg in state.get("messages", []):
+            if isinstance(msg, dict):
+                messages_history.append(dict_to_message(msg))
+            elif isinstance(msg, BaseMessage):
+                messages_history.append(msg)
+            else:
+                raise TypeError(f"Unsupported message type: {type(msg)}")
+
+        # Exclude last assistant message to avoid repetition
+        if messages_history and isinstance(messages_history[-1], AIMessage):
+            messages_for_llm = messages_history[:-1]
+        else:
+            messages_for_llm = messages_history
+
         messages = [
             SystemMessage(content="You are a helpful assistant. Use the provided context to answer the question."),
-            *state.get("messages", []),
+            *messages_for_llm,
             HumanMessage(content=f"Context: {state['context']}\n\nQuestion: {state['question']}"),
         ]
+
         response_chunks = []
         async for chunk in llm.astream(messages):
             response_chunks.append(chunk.content)
-            # Optionally stream partial output here if integrated with UI
         full_response = "".join(response_chunks)
-        # Append assistant message to messages for memory
-        updated_messages = state.get("messages", []) + [HumanMessage(content=state["question"]), BaseMessage(content=full_response, type="ai")]
+
+        # Append current user question and assistant answer to messages for memory
+        updated_messages = messages_history + [HumanMessage(content=state["question"]), AIMessage(content=full_response)]
+
         return {**state, "answer": full_response, "messages": updated_messages}
     return generate
 
@@ -223,6 +252,13 @@ print('loading graph')
 
 # --- Streamlit UI with async streaming ---
 
+# Helper to convert LangChain message objects to dicts for session state
+def message_to_dict(msg):
+    if hasattr(msg, "role"):
+        return {"role": msg.role, "content": msg.content}
+    # Fallback for BaseMessage or unknown types
+    return {"role": "assistant" if getattr(msg, "type", "") == "ai" else "user", "content": getattr(msg, "content", "")}
+
 st.title("LangGraph RAG Chatbot with Memory and Streaming")
 
 if "messages" not in st.session_state:
@@ -230,24 +266,23 @@ if "messages" not in st.session_state:
 
 # Display chat history
 for msg in st.session_state.messages:
-    role = "user" if isinstance(msg, HumanMessage) else "assistant"
+    role = msg.get("role", "user")
     with st.chat_message(role):
-        st.markdown(msg.content)
+        st.markdown(msg["content"])
 
 if prompt := st.chat_input("Ask a question..."):
-    st.session_state.messages.append(HumanMessage(content=prompt))
+    # Append user message as dict
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Create assistant chat message container and placeholder
+    # Assistant message container with streaming placeholder
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
 
         async def stream_graph():
             response_chunks = []
-            # Use a unique thread_id per conversation (e.g., user session or fixed for demo)
             thread_id = "default-thread"
-            # Prepare initial state with messages for memory
             initial_state = {
                 "question": prompt,
                 "context": "",
@@ -264,7 +299,8 @@ if prompt := st.chat_input("Ask a question..."):
                     response_placeholder.markdown("".join(response_chunks))
             return "".join(response_chunks)
 
+        # Run streaming and get final answer
         answer = asyncio.run(stream_graph())
 
-    # Append assistant message to session state messages for memory
-    st.session_state.messages.append(BaseMessage(content=answer, type="ai"))
+    # Append assistant message once after streaming completes
+    st.session_state.messages.append({"role": "assistant", "content": answer})
